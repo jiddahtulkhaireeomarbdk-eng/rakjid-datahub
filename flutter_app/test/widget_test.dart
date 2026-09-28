@@ -10,9 +10,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rakjid_datahub/main.dart';
 
 void main() {
-  testWidgets('app shows RAKJID DataHub title', (WidgetTester tester) async {
+  testWidgets('login shows app name and password recovery', (WidgetTester tester) async {
     await tester.pumpWidget(const RakjidDataHubApp());
 
-    expect(find.text('RAKJID DataHub'), findsOneWidget);
+    expect(find.text('Welcome to RAKJID DataHub'), findsOneWidget);
+    expect(find.text('Forgot password?'), findsOneWidget);
   });
 }

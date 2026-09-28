@@ -9,9 +9,29 @@ services:
     envVars:
       - key: DATAHUB_DATABASE_PATH
         value: /var/data/datahub.sqlite3
+      - key: AUTH_TOKEN_SECRET
+        generateValue: true
       - key: SME_API_BASE_URL
         sync: false
       - key: SME_API_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_STARTTLS
+        value: "true"
+      - key: PUBLIC_API_URL
         sync: false
     disk:
       name: datahub-storage

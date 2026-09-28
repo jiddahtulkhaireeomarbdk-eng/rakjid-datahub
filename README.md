@@ -1,6 +1,6 @@
 # RAKJID DataHub
 
-Mobile-first Nigerian data and airtime vending project.
+mobile app for Nigerian data and airtime vending project.
 
 ## Structure
 - `flutter_app/` — Flutter mobile application

@@ -1,10 +1,10 @@
 # RAKJID DataHub Backend
 
-Flask backend prepared for authentication, wallet ledger, payments, airtime/data transactions, and SME API integration.
+Flask backend for account authentication, password resets, Paystack wallet funding, and SME API plan lookup.
 
-Before enabling live transactions:
-- configure provider credentials
-- implement/verify the exact SME API endpoints for your account
-- implement Paystack initialization and webhook verification
-- add authentication and database persistence
-- add idempotency and transaction status handling
+Password reset requires SMTP settings and `PUBLIC_API_URL`.
+
+Wallet top-up uses Paystack initialization, callback verification, and an
+idempotent signed webhook. Data and airtime purchase endpoints return `503`
+until the account-specific SME purchase API is configured. No routes create
+fake balances or transactions.

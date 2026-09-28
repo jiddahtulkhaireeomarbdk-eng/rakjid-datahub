@@ -8,22 +8,22 @@ API_KEY = os.getenv("SME_API_KEY", "")
 
 def headers():
     return {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Token {API_KEY}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
 
 
 def get_data_plans():
-    if not BASE_URL or not API_KEY:
-        return [
-            {"id": "mtn-1gb", "network": "MTN", "plan": "1GB", "amount": 350},
-            {"id": "glo-2gb", "network": "Glo", "plan": "2GB", "amount": 650},
-            {"id": "airtel-3gb", "network": "Airtel", "plan": "3GB", "amount": 900},
-            {"id": "mtn-5gb", "network": "MTN", "plan": "5GB", "amount": 1500},
-        ]
+    if not BASE_URL:
+        raise RuntimeError("SME API base URL is not configured")
 
-    response = requests.get(f"{BASE_URL}/data/plans", headers=headers(), timeout=30)
+    request_headers = headers() if API_KEY else {"Accept": "application/json"}
+    response = requests.get(
+        f"{BASE_URL}/dataplans/",
+        headers=request_headers,
+        timeout=30,
+    )
     response.raise_for_status()
     payload = response.json()
 
@@ -32,10 +32,47 @@ def get_data_plans():
             value = payload.get(key)
             if isinstance(value, list):
                 return value
-        return payload
+        raise ValueError("SME API returned an invalid data plans response")
 
     if isinstance(payload, list):
         return payload
 
-    return []
+    raise ValueError("SME API returned an invalid data plans response")
+
+
+def _purchase(path, payload):
+    if not BASE_URL or not API_KEY:
+        raise RuntimeError("SME API credentials are not configured")
+
+    response = requests.post(
+        f"{BASE_URL}{path}",
+        headers=headers(),
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not isinstance(result, dict):
+        raise ValueError("SME API returned an invalid purchase response")
+    return result
+
+
+def purchase_data(network_id, plan_id, phone, reference):
+    return _purchase("/data/", {
+        "network": network_id,
+        "data_plan": plan_id,
+        "phone": phone,
+        "ref": reference,
+        "ported_number": "false",
+    })
+
+
+def purchase_airtime(network_id, amount, phone, reference):
+    return _purchase("/airtime/", {
+        "network": network_id,
+        "amount": amount,
+        "phone": phone,
+        "ref": reference,
+        "ported_number": "false",
+    })
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 const String configuredBackendUrl = String.fromEnvironment('BACKEND_URL');
 final String backendBaseUrl = configuredBackendUrl.isNotEmpty
@@ -32,15 +33,9 @@ Future<List<DataPlan>> fetchPlans() async {
 }
 
 Future<WalletState> fetchWallet() async {
-  final headers = <String, String>{};
-  final userId = currentUserId;
-  if (userId != null && userId.isNotEmpty) {
-    headers['X-User-Id'] = userId;
-  }
-
   final response = await http.get(
     Uri.parse('$backendBaseUrl/api/wallet'),
-    headers: headers,
+    headers: authHeaders,
   );
   if (response.statusCode != 200) {
     throw Exception('Failed to load wallet');
@@ -49,15 +44,9 @@ Future<WalletState> fetchWallet() async {
 }
 
 Future<List<TransactionItem>> fetchTransactions() async {
-  final headers = <String, String>{};
-  final userId = currentUserId;
-  if (userId != null && userId.isNotEmpty) {
-    headers['X-User-Id'] = userId;
-  }
-
   final response = await http.get(
     Uri.parse('$backendBaseUrl/api/transactions'),
-    headers: headers,
+    headers: authHeaders,
   );
   if (response.statusCode != 200) {
     throw Exception('Failed to load transaction history');
@@ -71,23 +60,62 @@ Future<List<TransactionItem>> fetchTransactions() async {
       .toList();
 }
 
-String? currentUserId;
+Future<void> requestPasswordReset(String email) async {
+  final response = await http.post(
+    Uri.parse('$backendBaseUrl/api/auth/forgot-password'),
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode({'email': email.trim()}),
+  );
+  final payload = jsonDecode(response.body);
+  if (response.statusCode != 200 || payload['success'] != true) {
+    throw Exception(payload['message'] ?? 'Could not request password reset');
+  }
+}
+
+Future<Map<String, dynamic>> initializeWalletTopup(double amount) async {
+  final response = await http.post(
+    Uri.parse('$backendBaseUrl/api/wallet/topup'),
+    headers: {'Content-Type': 'application/json', ...authHeaders},
+    body: jsonEncode({'amount': amount}),
+  );
+  final payload = jsonDecode(response.body);
+  if (response.statusCode != 201 || payload['success'] != true) {
+    throw Exception(payload['message'] ?? 'Could not start wallet top-up');
+  }
+  return payload['data'] as Map<String, dynamic>;
+}
+
+Future<double> verifyWalletTopup(String reference) async {
+  final response = await http.post(
+    Uri.parse('$backendBaseUrl/api/wallet/topup/verify'),
+    headers: {'Content-Type': 'application/json', ...authHeaders},
+    body: jsonEncode({'reference': reference}),
+  );
+  final payload = jsonDecode(response.body);
+  if (response.statusCode != 200 || payload['success'] != true) {
+    throw Exception(payload['message'] ?? 'Payment has not been confirmed yet');
+  }
+  return (payload['balance'] as num).toDouble();
+}
+
+String? currentAccessToken;
+
+Map<String, String> get authHeaders => currentAccessToken == null
+  ? const {}
+  : {'Authorization': 'Bearer $currentAccessToken'};
 
 class AppConfig {
   final String provider;
-  final bool demoMode;
   final Map<String, int> networks;
 
   const AppConfig({
     required this.provider,
-    required this.demoMode,
     required this.networks,
   });
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
     return AppConfig(
       provider: json['provider'] as String? ?? 'Unknown',
-      demoMode: json['demoMode'] as bool? ?? false,
       networks: Map<String, int>.from(json['networks'] ?? const {}),
     );
   }
@@ -145,7 +173,7 @@ Future<AuthUser> loginUser(String email, String password) async {
   }
 
   final user = AuthUser.fromJson(payload['user'] as Map<String, dynamic>);
-  currentUserId = user.id;
+  currentAccessToken = payload['access_token']?.toString();
   return user;
 }
 
@@ -166,7 +194,7 @@ Future<AuthUser> signupUser(String name, String email, String password) async {
   }
 
   final user = AuthUser.fromJson(payload['user'] as Map<String, dynamic>);
-  currentUserId = user.id;
+  currentAccessToken = payload['access_token']?.toString();
   return user;
 }
 
@@ -174,7 +202,7 @@ class DataPlan {
   final String id;
   final String network;
   final String name;
-  final int amount;
+  final double amount;
 
   const DataPlan({
     required this.id,
@@ -188,13 +216,17 @@ class DataPlan {
       id: json['id']?.toString() ?? '',
       network: json['network']?.toString() ?? 'Unknown',
       name: json['plan']?.toString() ?? json['name']?.toString() ?? 'Data plan',
-      amount: (json['amount'] is int)
-          ? json['amount'] as int
-          : int.tryParse(json['amount']?.toString() ?? '0') ?? 0,
+      amount: (json['amount'] ?? json['price'] as num?) is num
+          ? ((json['amount'] ?? json['price']) as num).toDouble()
+          : double.tryParse(
+                (json['amount'] ?? json['price'])?.toString() ?? '0',
+              ) ??
+              0,
     );
   }
 
-  String get displayPrice => '₦${amount.toString()}';
+  String get displayPrice =>
+      '₦${amount.toStringAsFixed(amount == amount.truncateToDouble() ? 0 : 2)}';
 }
 
 class TransactionItem {
@@ -306,6 +338,34 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  Future<void> _requestPasswordReset() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter your email address first')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      await requestPasswordReset(email);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('If the account exists, reset instructions were sent')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.toString())),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -404,6 +464,14 @@ class _AuthScreenState extends State<AuthScreen> {
                       border: OutlineInputBorder(),
                     ),
                   ),
+                  if (_isLogin)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: _isLoading ? null : _requestPasswordReset,
+                        child: const Text('Forgot password?'),
+                      ),
+                    ),
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
@@ -426,18 +494,6 @@ class _AuthScreenState extends State<AuthScreen> {
                           : Text(_isLogin ? 'Login' : 'Create account'),
                     ),
                   ),
-                  const SizedBox(height: 18),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF3FBF6),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Text(
-                      'Demo mode: use any valid email and password to create or sign in.',
-                      style: TextStyle(color: Color(0xFF0E9F5A), fontSize: 12),
-                    ),
-                  )
                 ],
               ),
             ),
@@ -877,7 +933,7 @@ class _AirtimeTabState extends State<AirtimeTab> {
         Uri.parse('$backendBaseUrl/api/airtime'),
         headers: {
           'Content-Type': 'application/json',
-          if (currentUserId != null && currentUserId!.isNotEmpty) 'X-User-Id': currentUserId!,
+          ...authHeaders,
         },
         body: jsonEncode({
           'phone': phone,
@@ -887,13 +943,14 @@ class _AirtimeTabState extends State<AirtimeTab> {
       );
 
       final payload = jsonDecode(response.body);
-      if (response.statusCode != 200 || payload['success'] != true) {
+      if ((response.statusCode != 200 && response.statusCode != 202) ||
+          payload['success'] != true) {
         throw Exception(payload['message'] ?? 'Airtime purchase failed');
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Airtime purchase queued successfully')),
+        SnackBar(content: Text(payload['message']?.toString() ?? 'Airtime request submitted')),
       );
       _phoneController.clear();
       _amountController.clear();
@@ -982,6 +1039,8 @@ class TopupTab extends StatefulWidget {
 class _TopupTabState extends State<TopupTab> {
   final TextEditingController _amountController = TextEditingController();
   bool _isSubmitting = false;
+  String? _pendingReference;
+  String? _checkoutUrl;
 
   Future<void> _submit() async {
     final amountText = _amountController.text.trim();
@@ -997,26 +1056,66 @@ class _TopupTabState extends State<TopupTab> {
     setState(() => _isSubmitting = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('$backendBaseUrl/api/wallet/topup'),
-        headers: {
-          'Content-Type': 'application/json',
-          if (currentUserId != null && currentUserId!.isNotEmpty) 'X-User-Id': currentUserId!,
-        },
-        body: jsonEncode({'amount': amount}),
-      );
-
-      final payload = jsonDecode(response.body);
-      if (response.statusCode != 200 || payload['success'] != true) {
-        throw Exception(payload['message'] ?? 'Top-up failed');
+      final payment = await initializeWalletTopup(amount);
+      _pendingReference = payment['reference']?.toString();
+      _checkoutUrl = payment['authorization_url']?.toString();
+      if (_pendingReference == null || _checkoutUrl == null) {
+        throw Exception('Paystack did not return a valid checkout session');
       }
-
       if (!mounted) return;
-      widget.walletBalance.value += amount;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Wallet top-up successful')),
+      setState(() {});
+      final checkoutOpened = await launchUrl(
+        Uri.parse(_checkoutUrl!),
+        mode: LaunchMode.externalApplication,
       );
+      if (!mounted) return;
+      if (!checkoutOpened) {
+        throw Exception('Checkout is ready. Tap Open Paystack to continue.');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Complete payment, then verify it here')),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.toString())),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  Future<void> _openCheckout() async {
+    final checkoutUrl = _checkoutUrl;
+    if (checkoutUrl == null) return;
+    final opened = await launchUrl(
+      Uri.parse(checkoutUrl),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open Paystack checkout')),
+      );
+    }
+  }
+
+  Future<void> _verifyPayment() async {
+    final reference = _pendingReference;
+    if (reference == null) return;
+    setState(() => _isSubmitting = true);
+    try {
+      final balance = await verifyWalletTopup(reference);
+      if (!mounted) return;
+      widget.walletBalance.value = balance;
+      setState(() {
+        _pendingReference = null;
+        _checkoutUrl = null;
+      });
       _amountController.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Payment verified and wallet updated')),
+      );
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1052,12 +1151,31 @@ class _TopupTabState extends State<TopupTab> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: _isSubmitting ? null : _submit,
+              onPressed: _isSubmitting || _pendingReference != null ? null : _submit,
               child: _isSubmitting
                   ? const CircularProgressIndicator()
-                  : const Text('Top Up Wallet'),
+                  : const Text('Continue to Paystack'),
             ),
           ),
+          if (_pendingReference != null) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isSubmitting ? null : _openCheckout,
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Open Paystack'),
+              ),
+            ),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isSubmitting ? null : _verifyPayment,
+                icon: const Icon(Icons.verified_outlined),
+                label: const Text('Verify payment'),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1156,7 +1274,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
         Uri.parse('$backendBaseUrl/api/purchase'),
         headers: {
           'Content-Type': 'application/json',
-          if (currentUserId != null && currentUserId!.isNotEmpty) 'X-User-Id': currentUserId!,
+          ...authHeaders,
         },
         body: jsonEncode({
           'plan_id': widget.plan.id,
@@ -1166,17 +1284,14 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
       );
 
       final payload = jsonDecode(response.body);
-      if (response.statusCode != 200 || payload['success'] != true) {
+      if ((response.statusCode != 200 && response.statusCode != 202) ||
+          payload['success'] != true) {
         throw Exception(payload['message'] ?? 'Purchase failed');
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Purchase request created for ${widget.plan.network} ${widget.plan.name} on $phone',
-          ),
-        ),
+        SnackBar(content: Text(payload['message']?.toString() ?? 'Purchase submitted')),
       );
     } catch (error) {
       if (mounted) {
